@@ -42,44 +42,61 @@ function createConnections(points) {
   return new Float32Array(segments)
 }
 
+function applyMatrices(mesh, points, dummy, scale = 1) {
+  if (!mesh) return
+
+  points.forEach((point, index) => {
+    dummy.position.copy(point)
+    dummy.scale.setScalar(scale)
+    dummy.updateMatrix()
+    mesh.setMatrixAt(index, dummy.matrix)
+  })
+
+  mesh.instanceMatrix.needsUpdate = true
+}
+
 export default function HomeOrb() {
-  const meshRef = useRef()
+  const nodeRef = useRef()
+  const glowRef = useRef()
   const points = useMemo(() => createSpherePoints(), [])
   const connections = useMemo(() => createConnections(points), [points])
   const dummy = useMemo(() => new THREE.Object3D(), [])
 
   useLayoutEffect(() => {
-    if (!meshRef.current) return
-
-    points.forEach((point, index) => {
-      dummy.position.copy(point)
-      dummy.updateMatrix()
-      meshRef.current.setMatrixAt(index, dummy.matrix)
-    })
-
-    meshRef.current.instanceMatrix.needsUpdate = true
+    applyMatrices(nodeRef.current, points, dummy, 1)
+    applyMatrices(glowRef.current, points, dummy, 2.45)
   }, [dummy, points])
 
   return (
     <group>
       <lineSegments>
         <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            args={[connections, 3]}
-          />
+          <bufferAttribute attach="attributes-position" args={[connections, 3]} />
         </bufferGeometry>
         <lineBasicMaterial
-          color="#ffffff"
+          color="#dfe7ff"
           transparent
-          opacity={0.095}
+          opacity={0.11}
           depthWrite={false}
+          blending={THREE.AdditiveBlending}
         />
       </lineSegments>
 
-      <instancedMesh ref={meshRef} args={[null, null, NODE_COUNT]}>
+      <instancedMesh ref={glowRef} args={[null, null, NODE_COUNT]} frustumCulled={false}>
         <sphereGeometry args={[0.032, 10, 10]} />
-        <meshBasicMaterial color="#f5f5f5" />
+        <meshBasicMaterial
+          color="#d9e4ff"
+          transparent
+          opacity={0.085}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+        />
+      </instancedMesh>
+
+      <instancedMesh ref={nodeRef} args={[null, null, NODE_COUNT]} frustumCulled={false}>
+        <sphereGeometry args={[0.032, 12, 12]} />
+        <meshBasicMaterial color="#f7f8fb" toneMapped={false} />
       </instancedMesh>
     </group>
   )
