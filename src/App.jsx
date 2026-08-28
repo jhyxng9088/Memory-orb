@@ -43,7 +43,6 @@ export default function App() {
         }}
       >
         <color attach="background" args={['#030303']} />
-        <fog attach="fog" args={['#030303', 4.2, 8.4]} />
         <ResponsiveCamera />
         <HomeOrb />
         <TrackballControls
