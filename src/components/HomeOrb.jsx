@@ -74,9 +74,9 @@ export default function HomeOrb() {
           <bufferAttribute attach="attributes-position" args={[connections, 3]} />
         </bufferGeometry>
         <lineBasicMaterial
-          color="#dfe7ff"
+          color="#e8edf8"
           transparent
-          opacity={0.11}
+          opacity={0.16}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
