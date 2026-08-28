@@ -48,12 +48,12 @@ export default function App() {
         <TrackballControls
           makeDefault
           noPan
-          rotateSpeed={1.05}
+          rotateSpeed={1.55}
           zoomSpeed={0.72}
           minDistance={4.35}
           maxDistance={9.2}
           staticMoving={false}
-          dynamicDampingFactor={0.14}
+          dynamicDampingFactor={0.1}
         />
       </Canvas>
       <div className="brand">Memory Orb</div>
