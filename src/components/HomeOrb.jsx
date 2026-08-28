@@ -94,34 +94,45 @@ function createPointBuffer(points) {
   return positions
 }
 
-function createPointTexture({ glow = false } = {}) {
+function createGlowTexture() {
   if (typeof document === 'undefined') return null
 
   const canvas = document.createElement('canvas')
-  canvas.width = 96
-  canvas.height = 96
+  canvas.width = 128
+  canvas.height = 128
   const context = canvas.getContext('2d')
-  const center = 48
+  const center = 64
+  const gradient = context.createRadialGradient(center, center, 0, center, center, 62)
 
-  context.clearRect(0, 0, 96, 96)
+  gradient.addColorStop(0, 'rgba(255,255,255,1)')
+  gradient.addColorStop(0.06, 'rgba(247,250,255,0.95)')
+  gradient.addColorStop(0.16, 'rgba(226,237,255,0.58)')
+  gradient.addColorStop(0.34, 'rgba(205,224,255,0.22)')
+  gradient.addColorStop(0.62, 'rgba(196,219,255,0.07)')
+  gradient.addColorStop(1, 'rgba(196,219,255,0)')
 
-  if (glow) {
-    const gradient = context.createRadialGradient(center, center, 0, center, center, 46)
-    gradient.addColorStop(0, 'rgba(235,242,255,0.72)')
-    gradient.addColorStop(0.18, 'rgba(220,232,255,0.42)')
-    gradient.addColorStop(0.48, 'rgba(210,225,255,0.16)')
-    gradient.addColorStop(1, 'rgba(210,225,255,0)')
-    context.fillStyle = gradient
-    context.fillRect(0, 0, 96, 96)
-  } else {
-    const gradient = context.createRadialGradient(center, center, 0, center, center, 28)
-    gradient.addColorStop(0, 'rgba(255,255,255,1)')
-    gradient.addColorStop(0.78, 'rgba(250,252,255,1)')
-    gradient.addColorStop(0.94, 'rgba(245,248,255,0.94)')
-    gradient.addColorStop(1, 'rgba(245,248,255,0)')
-    context.fillStyle = gradient
-    context.fillRect(20, 20, 56, 56)
-  }
+  context.fillStyle = gradient
+  context.fillRect(0, 0, 128, 128)
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.needsUpdate = true
+  return texture
+}
+
+function createNodeTexture() {
+  if (typeof document === 'undefined') return null
+
+  const canvas = document.createElement('canvas')
+  canvas.width = 128
+  canvas.height = 128
+  const context = canvas.getContext('2d')
+
+  context.clearRect(0, 0, 128, 128)
+  context.beginPath()
+  context.arc(64, 64, 31, 0, Math.PI * 2)
+  context.fillStyle = '#ffffff'
+  context.fill()
 
   const texture = new THREE.CanvasTexture(canvas)
   texture.colorSpace = THREE.SRGBColorSpace
@@ -131,7 +142,8 @@ function createPointTexture({ glow = false } = {}) {
 
 export default function HomeOrb() {
   const nodeGeometryRef = useRef()
-  const glowGeometryRef = useRef()
+  const innerGlowGeometryRef = useRef()
+  const outerGlowGeometryRef = useRef()
   const lineGeometryRef = useRef()
   const previousCameraQuaternion = useRef(new THREE.Quaternion())
   const hasPreviousCameraQuaternion = useRef(false)
@@ -159,9 +171,10 @@ export default function HomeOrb() {
     [edges, restPoints],
   )
   const nodePositions = useMemo(() => createPointBuffer(restPoints), [restPoints])
-  const glowPositions = useMemo(() => createPointBuffer(restPoints), [restPoints])
-  const nodeTexture = useMemo(() => createPointTexture(), [])
-  const glowTexture = useMemo(() => createPointTexture({ glow: true }), [])
+  const innerGlowPositions = useMemo(() => createPointBuffer(restPoints), [restPoints])
+  const outerGlowPositions = useMemo(() => createPointBuffer(restPoints), [restPoints])
+  const nodeTexture = useMemo(() => createNodeTexture(), [])
+  const glowTexture = useMemo(() => createGlowTexture(), [])
 
   const scratch = useMemo(
     () => ({
@@ -197,12 +210,8 @@ export default function HomeOrb() {
       hasPreviousCameraQuaternion.current = true
     }
 
-    scratch.inversePrevious
-      .copy(previousCameraQuaternion.current)
-      .invert()
-    scratch.deltaQuaternion
-      .copy(cameraQuaternion)
-      .multiply(scratch.inversePrevious)
+    scratch.inversePrevious.copy(previousCameraQuaternion.current).invert()
+    scratch.deltaQuaternion.copy(cameraQuaternion).multiply(scratch.inversePrevious)
 
     if (scratch.deltaQuaternion.w < 0) {
       scratch.deltaQuaternion.set(
@@ -235,16 +244,11 @@ export default function HomeOrb() {
       )
 
       angularSpeed = Math.min(angle / dt, MAX_ANGULAR_SPEED)
-      scratch.angularVelocity
-        .copy(scratch.angularAxis)
-        .multiplyScalar(angularSpeed)
+      scratch.angularVelocity.copy(scratch.angularAxis).multiplyScalar(angularSpeed)
     }
 
     previousCameraQuaternion.current.copy(cameraQuaternion)
-
-    scratch.cameraDirection
-      .copy(state.camera.position)
-      .normalize()
+    scratch.cameraDirection.copy(state.camera.position).normalize()
 
     const motionAmount = THREE.MathUtils.smoothstep(angularSpeed, 0.025, 0.9)
     const step = dt / SUBSTEPS
@@ -256,9 +260,7 @@ export default function HomeOrb() {
         const restPoint = restPoints[index]
         const response = responseFactors[index]
 
-        scratch.anchorDelta
-          .copy(restPoint)
-          .sub(point)
+        scratch.anchorDelta.copy(restPoint).sub(point)
         forces[index].addScaledVector(
           scratch.anchorDelta,
           ANCHOR_STIFFNESS * response,
@@ -266,9 +268,7 @@ export default function HomeOrb() {
 
         const radius = Math.max(point.length(), 0.0001)
         const radialError = radius - RADIUS
-        scratch.radialDirection
-          .copy(point)
-          .multiplyScalar(1 / radius)
+        scratch.radialDirection.copy(point).multiplyScalar(1 / radius)
         forces[index].addScaledVector(
           scratch.radialDirection,
           -radialError * RADIAL_STIFFNESS,
@@ -290,8 +290,7 @@ export default function HomeOrb() {
           const pointerDistanceSq = dx * dx + dy * dy
           const pointerWeight = Math.exp(-pointerDistanceSq / 0.26)
 
-          const contactWeight =
-            frontWeight * (0.12 + 0.88 * pointerWeight)
+          const contactWeight = frontWeight * (0.12 + 0.88 * pointerWeight)
           const irregularity = 0.82 + 0.34 * response
 
           forces[index].addScaledVector(
@@ -309,19 +308,15 @@ export default function HomeOrb() {
 
         scratch.delta.copy(pointB).sub(pointA)
         const distance = Math.max(scratch.delta.length(), 0.0001)
-        scratch.direction
-          .copy(scratch.delta)
-          .multiplyScalar(1 / distance)
+        scratch.direction.copy(scratch.delta).multiplyScalar(1 / distance)
 
         const stretch = distance - edge.restLength
-        const relativeSpeed = scratch
-          .delta
+        const relativeSpeed = scratch.delta
           .copy(velocityB)
           .sub(velocityA)
           .dot(scratch.direction)
 
-        const forceMagnitude =
-          EDGE_STIFFNESS * stretch + EDGE_DAMPING * relativeSpeed
+        const forceMagnitude = EDGE_STIFFNESS * stretch + EDGE_DAMPING * relativeSpeed
 
         forces[edge.a].addScaledVector(scratch.direction, forceMagnitude)
         forces[edge.b].addScaledVector(scratch.direction, -forceMagnitude)
@@ -346,26 +341,24 @@ export default function HomeOrb() {
     }
 
     const nodeAttribute = nodeGeometryRef.current?.attributes.position
-    const glowAttribute = glowGeometryRef.current?.attributes.position
+    const innerGlowAttribute = innerGlowGeometryRef.current?.attributes.position
+    const outerGlowAttribute = outerGlowGeometryRef.current?.attributes.position
 
     currentPoints.forEach((point, index) => {
       const offset = index * 3
+      const attributes = [nodeAttribute, innerGlowAttribute, outerGlowAttribute]
 
-      if (nodeAttribute) {
-        nodeAttribute.array[offset] = point.x
-        nodeAttribute.array[offset + 1] = point.y
-        nodeAttribute.array[offset + 2] = point.z
-      }
-
-      if (glowAttribute) {
-        glowAttribute.array[offset] = point.x
-        glowAttribute.array[offset + 1] = point.y
-        glowAttribute.array[offset + 2] = point.z
-      }
+      attributes.forEach((attribute) => {
+        if (!attribute) return
+        attribute.array[offset] = point.x
+        attribute.array[offset + 1] = point.y
+        attribute.array[offset + 2] = point.z
+      })
     })
 
     if (nodeAttribute) nodeAttribute.needsUpdate = true
-    if (glowAttribute) glowAttribute.needsUpdate = true
+    if (innerGlowAttribute) innerGlowAttribute.needsUpdate = true
+    if (outerGlowAttribute) outerGlowAttribute.needsUpdate = true
 
     if (lineGeometryRef.current) {
       const positionAttribute = lineGeometryRef.current.attributes.position
@@ -390,7 +383,7 @@ export default function HomeOrb() {
 
   return (
     <group>
-      <lineSegments>
+      <lineSegments renderOrder={0}>
         <bufferGeometry ref={lineGeometryRef}>
           <bufferAttribute
             attach="attributes-position"
@@ -408,21 +401,22 @@ export default function HomeOrb() {
       </lineSegments>
 
       <points frustumCulled={false} renderOrder={1}>
-        <bufferGeometry ref={glowGeometryRef}>
+        <bufferGeometry ref={outerGlowGeometryRef}>
           <bufferAttribute
             attach="attributes-position"
-            args={[glowPositions, 3]}
+            args={[outerGlowPositions, 3]}
           />
         </bufferGeometry>
         <pointsMaterial
           map={glowTexture}
-          color="#dce8ff"
-          size={0.17}
+          color="#b9d5ff"
+          size={0.34}
           sizeAttenuation
           transparent
-          opacity={0.28}
-          alphaTest={0.01}
+          opacity={0.2}
+          alphaTest={0.002}
           depthWrite={false}
+          depthTest
           blending={THREE.AdditiveBlending}
           toneMapped={false}
           fog
@@ -430,6 +424,29 @@ export default function HomeOrb() {
       </points>
 
       <points frustumCulled={false} renderOrder={2}>
+        <bufferGeometry ref={innerGlowGeometryRef}>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[innerGlowPositions, 3]}
+          />
+        </bufferGeometry>
+        <pointsMaterial
+          map={glowTexture}
+          color="#e8f1ff"
+          size={0.17}
+          sizeAttenuation
+          transparent
+          opacity={0.5}
+          alphaTest={0.006}
+          depthWrite={false}
+          depthTest
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+          fog
+        />
+      </points>
+
+      <points frustumCulled={false} renderOrder={3}>
         <bufferGeometry ref={nodeGeometryRef}>
           <bufferAttribute
             attach="attributes-position"
@@ -438,13 +455,14 @@ export default function HomeOrb() {
         </bufferGeometry>
         <pointsMaterial
           map={nodeTexture}
-          color="#f8f9fc"
-          size={0.078}
+          color="#ffffff"
+          size={0.056}
           sizeAttenuation
           transparent
-          opacity={0.98}
-          alphaTest={0.08}
-          depthWrite={false}
+          opacity={1}
+          alphaTest={0.35}
+          depthWrite
+          depthTest
           blending={THREE.NormalBlending}
           toneMapped={false}
           fog
