@@ -37,3 +37,5 @@ Copy `.env.example` and provide:
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 
 Do not commit private database credentials or service-role keys.
+
+<!-- deployment trigger: 2026-08-28 -->
