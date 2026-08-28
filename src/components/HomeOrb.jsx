@@ -5,15 +5,15 @@ import * as THREE from 'three'
 const NODE_COUNT = 96
 const RADIUS = 2.25
 
-const EDGE_STIFFNESS = 28
-const EDGE_DAMPING = 3.8
-const ANCHOR_STIFFNESS = 4.2
-const RADIAL_STIFFNESS = 8.5
-const NODE_DAMPING = 5.9
-const MOTION_FORCE = 0.52
-const MAX_ANGULAR_SPEED = 2.2
-const MAX_OFFSET = 0.19
-const SUBSTEPS = 2
+const EDGE_STIFFNESS = 19
+const EDGE_DAMPING = 2.6
+const ANCHOR_STIFFNESS = 2.2
+const RADIAL_STIFFNESS = 4.6
+const NODE_DAMPING = 3.4
+const MOTION_FORCE = 1.85
+const MAX_ANGULAR_SPEED = 3.2
+const MAX_OFFSET = 0.34
+const SUBSTEPS = 3
 
 function createSpherePoints() {
   return Array.from({ length: NODE_COUNT }, (_, index) => {
@@ -115,7 +115,7 @@ export default function HomeOrb() {
     [restPoints],
   )
   const responseFactors = useMemo(
-    () => restPoints.map((_, index) => 0.88 + 0.18 * (0.5 + 0.5 * Math.sin(index * 2.173))),
+    () => restPoints.map((_, index) => 0.86 + 0.22 * (0.5 + 0.5 * Math.sin(index * 2.173))),
     [restPoints],
   )
   const edges = useMemo(() => createConnections(restPoints), [restPoints])
@@ -138,6 +138,7 @@ export default function HomeOrb() {
       anchorDelta: new THREE.Vector3(),
       radialDirection: new THREE.Vector3(),
       offset: new THREE.Vector3(),
+      projected: new THREE.Vector3(),
     }),
     [],
   )
@@ -205,7 +206,7 @@ export default function HomeOrb() {
       .copy(state.camera.position)
       .normalize()
 
-    const motionAmount = THREE.MathUtils.smoothstep(angularSpeed, 0.035, 1.1)
+    const motionAmount = THREE.MathUtils.smoothstep(angularSpeed, 0.025, 0.9)
     const step = dt / SUBSTEPS
 
     for (let substep = 0; substep < SUBSTEPS; substep += 1) {
@@ -241,8 +242,17 @@ export default function HomeOrb() {
             -1,
             1,
           )
-          const contactWeight = 0.48 + 0.52 * (0.5 + 0.5 * facing)
-          const irregularity = 0.82 + 0.36 * response
+          const frontWeight = THREE.MathUtils.smoothstep(facing, -0.15, 0.82)
+
+          scratch.projected.copy(point).project(state.camera)
+          const dx = scratch.projected.x - state.pointer.x
+          const dy = scratch.projected.y - state.pointer.y
+          const pointerDistanceSq = dx * dx + dy * dy
+          const pointerWeight = Math.exp(-pointerDistanceSq / 0.26)
+
+          const contactWeight =
+            frontWeight * (0.12 + 0.88 * pointerWeight)
+          const irregularity = 0.82 + 0.34 * response
 
           forces[index].addScaledVector(
             scratch.tangent,
@@ -290,7 +300,7 @@ export default function HomeOrb() {
         if (offsetLength > MAX_OFFSET) {
           scratch.offset.multiplyScalar(MAX_OFFSET / offsetLength)
           point.copy(restPoints[index]).add(scratch.offset)
-          velocities[index].multiplyScalar(0.72)
+          velocities[index].multiplyScalar(0.68)
         }
       })
     }
