@@ -5,10 +5,11 @@ import * as THREE from 'three'
 const NODE_COUNT = 96
 const RADIUS = 2.25
 
-const SPRING_STRENGTH = 52
-const SPRING_DAMPING = 11.5
-const ELASTIC_DRAG = 0.043
+const SPRING_STRENGTH = 42
+const SPRING_DAMPING = 9.4
 const MAX_ORBIT_SPEED = 1.8
+const MAX_STRETCH = 0.075
+const MAX_TANGENTIAL_LAG = 0.036
 
 function createSpherePoints() {
   return Array.from({ length: NODE_COUNT }, (_, index) => {
@@ -82,12 +83,8 @@ export default function HomeOrb() {
   const hasPreviousCameraDirection = useRef(false)
 
   const restPoints = useMemo(() => createSpherePoints(), [])
-  const restDirections = useMemo(
-    () => restPoints.map((point) => point.clone().normalize()),
-    [restPoints],
-  )
   const responseFactors = useMemo(
-    () => restPoints.map((_, index) => 0.94 + Math.sin(index * 2.173) * 0.045),
+    () => restPoints.map((_, index) => 0.92 + Math.sin(index * 2.173) * 0.08),
     [restPoints],
   )
   const connectionIndices = useMemo(
@@ -112,7 +109,8 @@ export default function HomeOrb() {
     () => ({
       cameraDirection: new THREE.Vector3(),
       orbitAxis: new THREE.Vector3(),
-      tangent: new THREE.Vector3(),
+      motionDirection: new THREE.Vector3(),
+      localTangent: new THREE.Vector3(),
       target: new THREE.Vector3(),
       springDelta: new THREE.Vector3(),
     }),
@@ -141,11 +139,7 @@ export default function HomeOrb() {
       cameraDirection,
     )
     const sinAngle = orbitAxis.length()
-    const dot = THREE.MathUtils.clamp(
-      previousDirection.dot(cameraDirection),
-      -1,
-      1,
-    )
+    const dot = THREE.MathUtils.clamp(previousDirection.dot(cameraDirection), -1, 1)
 
     let orbitSpeed = 0
 
@@ -157,21 +151,46 @@ export default function HomeOrb() {
 
     previousDirection.copy(cameraDirection)
 
-    const motionAmount = THREE.MathUtils.smoothstep(orbitSpeed, 0.025, 1.25)
+    const motionAmount = THREE.MathUtils.smoothstep(orbitSpeed, 0.08, 1.15)
     const damping = Math.exp(-SPRING_DAMPING * dt)
+
+    if (motionAmount > 0 && orbitAxis.lengthSq() > 0) {
+      scratch.motionDirection
+        .crossVectors(orbitAxis, cameraDirection)
+        .normalize()
+    }
 
     currentPoints.forEach((point, index) => {
       const restPoint = restPoints[index]
       const target = scratch.target.copy(restPoint)
 
-      if (orbitSpeed > 0.0001) {
-        const silhouette = 1 - Math.abs(restDirections[index].dot(cameraDirection))
-        const compliance = responseFactors[index] + silhouette * 0.11
+      if (motionAmount > 0 && orbitAxis.lengthSq() > 0) {
+        const motionDirection = scratch.motionDirection
+        const motionCoordinate = restPoint.dot(motionDirection) / RADIUS
+        const axisCoordinate = restPoint.dot(orbitAxis) / RADIUS
+        const silhouetteWeight = 1 - 0.32 * Math.abs(axisCoordinate)
+        const response = responseFactors[index]
+        const stretch = MAX_STRETCH * motionAmount * silhouetteWeight * response
 
-        scratch.tangent.crossVectors(orbitAxis, restPoint)
+        // Stretch the silhouette in the drag direction while slightly compressing
+        // the perpendicular rotation axis. This makes the orb visibly deform
+        // instead of behaving like a rigid sphere that merely rotates late.
         target.addScaledVector(
-          scratch.tangent,
-          -ELASTIC_DRAG * orbitSpeed * motionAmount * compliance,
+          motionDirection,
+          restPoint.dot(motionDirection) * stretch,
+        )
+        target.addScaledVector(
+          orbitAxis,
+          restPoint.dot(orbitAxis) * -stretch * 0.24,
+        )
+
+        // Give different regions a slightly different rotational lag so the
+        // graph feels like one soft, connected mass rather than a rigid shell.
+        scratch.localTangent.crossVectors(orbitAxis, restPoint)
+        const sideBias = 0.62 + 0.38 * (0.5 + 0.5 * motionCoordinate)
+        target.addScaledVector(
+          scratch.localTangent,
+          -MAX_TANGENTIAL_LAG * motionAmount * sideBias * response,
         )
       }
 
