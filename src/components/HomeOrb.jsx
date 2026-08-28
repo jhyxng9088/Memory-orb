@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 
@@ -81,22 +81,57 @@ function createConnectionBuffer(points, edges) {
   return positions
 }
 
-function applyMatrices(mesh, points, dummy, scale = 1) {
-  if (!mesh) return
+function createPointBuffer(points) {
+  const positions = new Float32Array(points.length * 3)
 
   points.forEach((point, index) => {
-    dummy.position.copy(point)
-    dummy.scale.setScalar(scale)
-    dummy.updateMatrix()
-    mesh.setMatrixAt(index, dummy.matrix)
+    const offset = index * 3
+    positions[offset] = point.x
+    positions[offset + 1] = point.y
+    positions[offset + 2] = point.z
   })
 
-  mesh.instanceMatrix.needsUpdate = true
+  return positions
+}
+
+function createPointTexture({ glow = false } = {}) {
+  if (typeof document === 'undefined') return null
+
+  const canvas = document.createElement('canvas')
+  canvas.width = 96
+  canvas.height = 96
+  const context = canvas.getContext('2d')
+  const center = 48
+
+  context.clearRect(0, 0, 96, 96)
+
+  if (glow) {
+    const gradient = context.createRadialGradient(center, center, 0, center, center, 46)
+    gradient.addColorStop(0, 'rgba(235,242,255,0.72)')
+    gradient.addColorStop(0.18, 'rgba(220,232,255,0.42)')
+    gradient.addColorStop(0.48, 'rgba(210,225,255,0.16)')
+    gradient.addColorStop(1, 'rgba(210,225,255,0)')
+    context.fillStyle = gradient
+    context.fillRect(0, 0, 96, 96)
+  } else {
+    const gradient = context.createRadialGradient(center, center, 0, center, center, 28)
+    gradient.addColorStop(0, 'rgba(255,255,255,1)')
+    gradient.addColorStop(0.78, 'rgba(250,252,255,1)')
+    gradient.addColorStop(0.94, 'rgba(245,248,255,0.94)')
+    gradient.addColorStop(1, 'rgba(245,248,255,0)')
+    context.fillStyle = gradient
+    context.fillRect(20, 20, 56, 56)
+  }
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.needsUpdate = true
+  return texture
 }
 
 export default function HomeOrb() {
-  const nodeRef = useRef()
-  const glowRef = useRef()
+  const nodeGeometryRef = useRef()
+  const glowGeometryRef = useRef()
   const lineGeometryRef = useRef()
   const previousCameraQuaternion = useRef(new THREE.Quaternion())
   const hasPreviousCameraQuaternion = useRef(false)
@@ -123,8 +158,11 @@ export default function HomeOrb() {
     () => createConnectionBuffer(restPoints, edges),
     [edges, restPoints],
   )
+  const nodePositions = useMemo(() => createPointBuffer(restPoints), [restPoints])
+  const glowPositions = useMemo(() => createPointBuffer(restPoints), [restPoints])
+  const nodeTexture = useMemo(() => createPointTexture(), [])
+  const glowTexture = useMemo(() => createPointTexture({ glow: true }), [])
 
-  const dummy = useMemo(() => new THREE.Object3D(), [])
   const scratch = useMemo(
     () => ({
       deltaQuaternion: new THREE.Quaternion(),
@@ -143,10 +181,12 @@ export default function HomeOrb() {
     [],
   )
 
-  useLayoutEffect(() => {
-    applyMatrices(nodeRef.current, currentPoints, dummy, 1)
-    applyMatrices(glowRef.current, currentPoints, dummy, 2.45)
-  }, [currentPoints, dummy])
+  useEffect(() => {
+    return () => {
+      nodeTexture?.dispose()
+      glowTexture?.dispose()
+    }
+  }, [glowTexture, nodeTexture])
 
   useFrame((state, frameDelta) => {
     const dt = Math.min(frameDelta, 1 / 30)
@@ -305,8 +345,27 @@ export default function HomeOrb() {
       })
     }
 
-    applyMatrices(nodeRef.current, currentPoints, dummy, 1)
-    applyMatrices(glowRef.current, currentPoints, dummy, 2.45)
+    const nodeAttribute = nodeGeometryRef.current?.attributes.position
+    const glowAttribute = glowGeometryRef.current?.attributes.position
+
+    currentPoints.forEach((point, index) => {
+      const offset = index * 3
+
+      if (nodeAttribute) {
+        nodeAttribute.array[offset] = point.x
+        nodeAttribute.array[offset + 1] = point.y
+        nodeAttribute.array[offset + 2] = point.z
+      }
+
+      if (glowAttribute) {
+        glowAttribute.array[offset] = point.x
+        glowAttribute.array[offset + 1] = point.y
+        glowAttribute.array[offset + 2] = point.z
+      }
+    })
+
+    if (nodeAttribute) nodeAttribute.needsUpdate = true
+    if (glowAttribute) glowAttribute.needsUpdate = true
 
     if (lineGeometryRef.current) {
       const positionAttribute = lineGeometryRef.current.attributes.position
@@ -341,36 +400,56 @@ export default function HomeOrb() {
         <lineBasicMaterial
           color="#e8edf8"
           transparent
-          opacity={0.16}
+          opacity={0.15}
           depthWrite={false}
-          blending={THREE.AdditiveBlending}
+          blending={THREE.NormalBlending}
+          fog
         />
       </lineSegments>
 
-      <instancedMesh
-        ref={glowRef}
-        args={[null, null, NODE_COUNT]}
-        frustumCulled={false}
-      >
-        <sphereGeometry args={[0.032, 10, 10]} />
-        <meshBasicMaterial
-          color="#d9e4ff"
+      <points frustumCulled={false} renderOrder={1}>
+        <bufferGeometry ref={glowGeometryRef}>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[glowPositions, 3]}
+          />
+        </bufferGeometry>
+        <pointsMaterial
+          map={glowTexture}
+          color="#dce8ff"
+          size={0.17}
+          sizeAttenuation
           transparent
-          opacity={0.085}
+          opacity={0.28}
+          alphaTest={0.01}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
           toneMapped={false}
+          fog
         />
-      </instancedMesh>
+      </points>
 
-      <instancedMesh
-        ref={nodeRef}
-        args={[null, null, NODE_COUNT]}
-        frustumCulled={false}
-      >
-        <sphereGeometry args={[0.032, 12, 12]} />
-        <meshBasicMaterial color="#f7f8fb" toneMapped={false} />
-      </instancedMesh>
+      <points frustumCulled={false} renderOrder={2}>
+        <bufferGeometry ref={nodeGeometryRef}>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[nodePositions, 3]}
+          />
+        </bufferGeometry>
+        <pointsMaterial
+          map={nodeTexture}
+          color="#f8f9fc"
+          size={0.078}
+          sizeAttenuation
+          transparent
+          opacity={0.98}
+          alphaTest={0.08}
+          depthWrite={false}
+          blending={THREE.NormalBlending}
+          toneMapped={false}
+          fog
+        />
+      </points>
     </group>
   )
 }
