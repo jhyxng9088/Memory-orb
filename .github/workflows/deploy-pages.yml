@@ -12,6 +12,7 @@ permissions:
   pages: write
   id-token: write
 
+# review/** branches run the same build checks but never deploy.
 concurrency:
   group: pages-${{ github.ref }}
   cancel-in-progress: true
