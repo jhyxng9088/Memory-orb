@@ -1,8 +1,14 @@
 import { useLayoutEffect, useMemo, useRef } from 'react'
+import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 
 const NODE_COUNT = 96
 const RADIUS = 2.25
+
+const SPRING_STRENGTH = 52
+const SPRING_DAMPING = 11.5
+const ELASTIC_DRAG = 0.043
+const MAX_ORBIT_SPEED = 1.8
 
 function createSpherePoints() {
   return Array.from({ length: NODE_COUNT }, (_, index) => {
@@ -18,13 +24,12 @@ function createSpherePoints() {
   })
 }
 
-function createConnections(points) {
-  const segments = []
+function createConnectionIndices(points) {
+  const pairs = []
 
   points.forEach((point, index) => {
     const nearest = points
       .map((candidate, candidateIndex) => ({
-        candidate,
         candidateIndex,
         distance: point.distanceToSquared(candidate),
       }))
@@ -32,14 +37,28 @@ function createConnections(points) {
       .sort((a, b) => a.distance - b.distance)
       .slice(0, 3)
 
-    nearest.forEach(({ candidate, candidateIndex }) => {
+    nearest.forEach(({ candidateIndex }) => {
       if (candidateIndex > index) {
-        segments.push(point.x, point.y, point.z, candidate.x, candidate.y, candidate.z)
+        pairs.push(index, candidateIndex)
       }
     })
   })
 
-  return new Float32Array(segments)
+  return pairs
+}
+
+function createConnectionBuffer(points, connectionIndices) {
+  const positions = new Float32Array(connectionIndices.length * 3)
+
+  connectionIndices.forEach((pointIndex, bufferIndex) => {
+    const point = points[pointIndex]
+    const offset = bufferIndex * 3
+    positions[offset] = point.x
+    positions[offset + 1] = point.y
+    positions[offset + 2] = point.z
+  })
+
+  return positions
 }
 
 function applyMatrices(mesh, points, dummy, scale = 1) {
@@ -58,20 +77,161 @@ function applyMatrices(mesh, points, dummy, scale = 1) {
 export default function HomeOrb() {
   const nodeRef = useRef()
   const glowRef = useRef()
-  const points = useMemo(() => createSpherePoints(), [])
-  const connections = useMemo(() => createConnections(points), [points])
+  const lineGeometryRef = useRef()
+  const previousCameraDirection = useRef(new THREE.Vector3())
+  const hasPreviousCameraDirection = useRef(false)
+
+  const restPoints = useMemo(() => createSpherePoints(), [])
+  const restDirections = useMemo(
+    () => restPoints.map((point) => point.clone().normalize()),
+    [restPoints],
+  )
+  const responseFactors = useMemo(
+    () => restPoints.map((_, index) => 0.94 + Math.sin(index * 2.173) * 0.045),
+    [restPoints],
+  )
+  const connectionIndices = useMemo(
+    () => createConnectionIndices(restPoints),
+    [restPoints],
+  )
+  const connectionPositions = useMemo(
+    () => createConnectionBuffer(restPoints, connectionIndices),
+    [connectionIndices, restPoints],
+  )
+  const currentPoints = useMemo(
+    () => restPoints.map((point) => point.clone()),
+    [restPoints],
+  )
+  const velocities = useMemo(
+    () => restPoints.map(() => new THREE.Vector3()),
+    [restPoints],
+  )
+
   const dummy = useMemo(() => new THREE.Object3D(), [])
+  const scratch = useMemo(
+    () => ({
+      cameraDirection: new THREE.Vector3(),
+      orbitAxis: new THREE.Vector3(),
+      tangent: new THREE.Vector3(),
+      target: new THREE.Vector3(),
+      springDelta: new THREE.Vector3(),
+    }),
+    [],
+  )
 
   useLayoutEffect(() => {
-    applyMatrices(nodeRef.current, points, dummy, 1)
-    applyMatrices(glowRef.current, points, dummy, 2.45)
-  }, [dummy, points])
+    applyMatrices(nodeRef.current, currentPoints, dummy, 1)
+    applyMatrices(glowRef.current, currentPoints, dummy, 2.45)
+  }, [currentPoints, dummy])
+
+  useFrame((state, frameDelta) => {
+    const dt = Math.min(frameDelta, 1 / 30)
+    const cameraDirection = scratch.cameraDirection
+      .copy(state.camera.position)
+      .normalize()
+
+    if (!hasPreviousCameraDirection.current) {
+      previousCameraDirection.current.copy(cameraDirection)
+      hasPreviousCameraDirection.current = true
+    }
+
+    const previousDirection = previousCameraDirection.current
+    const orbitAxis = scratch.orbitAxis.crossVectors(
+      previousDirection,
+      cameraDirection,
+    )
+    const sinAngle = orbitAxis.length()
+    const dot = THREE.MathUtils.clamp(
+      previousDirection.dot(cameraDirection),
+      -1,
+      1,
+    )
+
+    let orbitSpeed = 0
+
+    if (sinAngle > 0.000001 && dt > 0) {
+      const angle = Math.atan2(sinAngle, dot)
+      orbitAxis.multiplyScalar(1 / sinAngle)
+      orbitSpeed = Math.min(angle / dt, MAX_ORBIT_SPEED)
+    }
+
+    previousDirection.copy(cameraDirection)
+
+    const motionAmount = THREE.MathUtils.smoothstep(orbitSpeed, 0.025, 1.25)
+    const damping = Math.exp(-SPRING_DAMPING * dt)
+
+    currentPoints.forEach((point, index) => {
+      const restPoint = restPoints[index]
+      const target = scratch.target.copy(restPoint)
+
+      if (orbitSpeed > 0.0001) {
+        const silhouette = 1 - Math.abs(restDirections[index].dot(cameraDirection))
+        const compliance = responseFactors[index] + silhouette * 0.11
+
+        scratch.tangent.crossVectors(orbitAxis, restPoint)
+        target.addScaledVector(
+          scratch.tangent,
+          -ELASTIC_DRAG * orbitSpeed * motionAmount * compliance,
+        )
+      }
+
+      const springStrength = SPRING_STRENGTH * responseFactors[index]
+      scratch.springDelta
+        .copy(target)
+        .sub(point)
+        .multiplyScalar(springStrength * dt)
+
+      velocities[index].add(scratch.springDelta)
+      velocities[index].multiplyScalar(damping)
+      point.addScaledVector(velocities[index], dt)
+
+      if (nodeRef.current) {
+        dummy.position.copy(point)
+        dummy.scale.setScalar(1)
+        dummy.updateMatrix()
+        nodeRef.current.setMatrixAt(index, dummy.matrix)
+      }
+
+      if (glowRef.current) {
+        dummy.position.copy(point)
+        dummy.scale.setScalar(2.45)
+        dummy.updateMatrix()
+        glowRef.current.setMatrixAt(index, dummy.matrix)
+      }
+    })
+
+    if (nodeRef.current) {
+      nodeRef.current.instanceMatrix.needsUpdate = true
+    }
+
+    if (glowRef.current) {
+      glowRef.current.instanceMatrix.needsUpdate = true
+    }
+
+    if (lineGeometryRef.current) {
+      const positionAttribute = lineGeometryRef.current.attributes.position
+      const array = positionAttribute.array
+
+      connectionIndices.forEach((pointIndex, bufferIndex) => {
+        const point = currentPoints[pointIndex]
+        const offset = bufferIndex * 3
+        array[offset] = point.x
+        array[offset + 1] = point.y
+        array[offset + 2] = point.z
+      })
+
+      positionAttribute.needsUpdate = true
+    }
+  })
 
   return (
     <group>
       <lineSegments>
-        <bufferGeometry>
-          <bufferAttribute attach="attributes-position" args={[connections, 3]} />
+        <bufferGeometry ref={lineGeometryRef}>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[connectionPositions, 3]}
+          />
         </bufferGeometry>
         <lineBasicMaterial
           color="#e8edf8"
@@ -82,7 +242,11 @@ export default function HomeOrb() {
         />
       </lineSegments>
 
-      <instancedMesh ref={glowRef} args={[null, null, NODE_COUNT]} frustumCulled={false}>
+      <instancedMesh
+        ref={glowRef}
+        args={[null, null, NODE_COUNT]}
+        frustumCulled={false}
+      >
         <sphereGeometry args={[0.032, 10, 10]} />
         <meshBasicMaterial
           color="#d9e4ff"
@@ -94,7 +258,11 @@ export default function HomeOrb() {
         />
       </instancedMesh>
 
-      <instancedMesh ref={nodeRef} args={[null, null, NODE_COUNT]} frustumCulled={false}>
+      <instancedMesh
+        ref={nodeRef}
+        args={[null, null, NODE_COUNT]}
+        frustumCulled={false}
+      >
         <sphereGeometry args={[0.032, 12, 12]} />
         <meshBasicMaterial color="#f7f8fb" toneMapped={false} />
       </instancedMesh>
