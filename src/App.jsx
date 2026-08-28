@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
+import { TrackballControls } from '@react-three/drei'
 import HomeOrb from './components/HomeOrb.jsx'
 
 function ResponsiveCamera() {
@@ -45,19 +45,15 @@ export default function App() {
         <color attach="background" args={['#030303']} />
         <ResponsiveCamera />
         <HomeOrb />
-        <OrbitControls
+        <TrackballControls
           makeDefault
-          enablePan={false}
-          enableDamping
-          dampingFactor={0.06}
-          rotateSpeed={0.48}
-          zoomSpeed={0.5}
+          noPan
+          rotateSpeed={1.05}
+          zoomSpeed={0.72}
           minDistance={4.35}
           maxDistance={9.2}
-          minPolarAngle={0.05}
-          maxPolarAngle={Math.PI - 0.05}
-          autoRotate
-          autoRotateSpeed={0.16}
+          staticMoving={false}
+          dynamicDampingFactor={0.14}
         />
       </Canvas>
       <div className="brand">Memory Orb</div>
