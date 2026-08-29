@@ -10,8 +10,7 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 
 const MAX_NODES = 120
-const MAX_LINKS_PER_NODE = 4
-const MAX_EDGES = MAX_NODES * MAX_LINKS_PER_NODE
+const MAX_EDGES = (MAX_NODES * (MAX_NODES - 1)) / 2
 
 const REPULSION_STRENGTH = 0.5
 const REPULSION_SOFTENING = 0.045
@@ -69,7 +68,6 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
   const lineGeometryRef = useRef()
   const nodesRef = useRef([])
   const edgesRef = useRef([])
-  const degreesRef = useRef(new Array(MAX_NODES).fill(0))
   const [nodeCount, setNodeCount] = useState(0)
 
   const linePositions = useMemo(() => createLineBuffer(), [])
@@ -106,35 +104,15 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
         force: new THREE.Vector3(),
       })
 
-      if (index > 0) {
-        const linkCount = Math.min(MAX_LINKS_PER_NODE, index)
-        const candidates = Array.from({ length: index }, (_, candidateIndex) => {
-          const distanceSq = nodes[candidateIndex].position.distanceToSquared(position)
-          const degreePenalty = degreesRef.current[candidateIndex] * 0.42
-          const variation = seededRandom(index * 97 + candidateIndex * 13) * 0.08
+      for (let candidateIndex = 0; candidateIndex < index; candidateIndex += 1) {
+        const restVariation =
+          0.92 + seededRandom(index * 31 + candidateIndex * 17) * 0.16
 
-          return {
-            candidateIndex,
-            score: distanceSq * 0.55 + degreePenalty + variation,
-          }
+        edges.push({
+          a: index,
+          b: candidateIndex,
+          restLength: BASE_REST_LENGTH * restVariation,
         })
-
-        candidates
-          .sort((a, b) => a.score - b.score)
-          .slice(0, linkCount)
-          .forEach(({ candidateIndex }, connectionIndex) => {
-            const restVariation =
-              0.92 + seededRandom(index * 31 + connectionIndex * 17) * 0.16
-
-            edges.push({
-              a: index,
-              b: candidateIndex,
-              restLength: BASE_REST_LENGTH * restVariation,
-            })
-
-            degreesRef.current[index] += 1
-            degreesRef.current[candidateIndex] += 1
-          })
       }
 
       setNodeCount(nodes.length)
