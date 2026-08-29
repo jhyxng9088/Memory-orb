@@ -143,7 +143,11 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
   }))
 
   useLayoutEffect(() => {
-    if (nodeRef.current) nodeRef.current.count = nodeCount
+    if (nodeRef.current) {
+      nodeRef.current.count = nodeCount
+      nodeRef.current.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    }
+
     if (lineGeometryRef.current) lineGeometryRef.current.setDrawRange(0, 0)
   }, [nodeCount])
 
@@ -272,6 +276,7 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
       <instancedMesh
         ref={nodeRef}
         args={[null, null, MAX_NODES]}
+        count={nodeCount}
         frustumCulled={false}
       >
         <sphereGeometry args={[0.04, 14, 14]} />
