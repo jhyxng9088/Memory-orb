@@ -65,38 +65,60 @@ textarea {
   touch-action: none;
 }
 
-.brand {
+.add-node-button {
   position: absolute;
-  top: max(20px, calc(env(safe-area-inset-top) + 8px));
   left: 50%;
+  bottom: max(22px, calc(env(safe-area-inset-bottom) + 14px));
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
   transform: translateX(-50%);
-  padding: 4px 8px;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.2;
-  letter-spacing: 0.01em;
-  color: rgba(255, 255, 255, 0.56);
-  text-shadow: 0 0 14px rgba(220, 230, 255, 0.08);
-  pointer-events: none;
-  white-space: nowrap;
+  border: 0;
+  border-radius: 50%;
+  background: #f7f7f7;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
 }
 
-@media (max-width: 520px) {
-  .brand {
-    top: max(16px, calc(env(safe-area-inset-top) + 6px));
-    font-size: 12px;
-  }
+.add-node-button::before,
+.add-node-button::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: #111;
+  transform: translate(-50%, -50%);
+}
+
+.add-node-button::after {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+.add-node-button:active {
+  transform: translateX(-50%) scale(0.94);
+  opacity: 0.9;
+}
+
+.add-node-button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.72);
+  outline-offset: 4px;
 }
 
 @media (min-width: 900px) {
-  .brand {
-    top: max(24px, calc(env(safe-area-inset-top) + 10px));
-    font-size: 13px;
+  .add-node-button {
+    bottom: max(26px, calc(env(safe-area-inset-bottom) + 18px));
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * {
-    scroll-behavior: auto !important;
+  .add-node-button {
+    transition: none;
   }
 }
