@@ -17,8 +17,8 @@ const REPULSION_SOFTENING = 0.045
 const MAX_REPULSION_FORCE = 6
 const SPRING_STIFFNESS = 5.4
 const SPRING_DAMPING = 0.95
-const STRONG_REST_LENGTH = 0.48
-const WEAK_REST_LENGTH = 1.32
+const STRONG_REST_LENGTH = 0.42
+const WEAK_REST_LENGTH = 1.58
 const NODE_DAMPING = 2.6
 const CENTER_OF_MASS_STIFFNESS = 0.22
 const MAX_SPEED = 3.2
@@ -39,28 +39,28 @@ function createMemoryProfile(index) {
 }
 
 function getRelationshipStrength(profileA, profileB) {
-  let strength = 0.06
+  let strength = 0.03
 
-  if (profileA.person === profileB.person) strength += 0.48
-  if (profileA.place === profileB.place) strength += 0.22
-  if (profileA.topic === profileB.topic) strength += 0.16
+  if (profileA.person === profileB.person) strength += 0.58
+  if (profileA.place === profileB.place) strength += 0.18
+  if (profileA.topic === profileB.topic) strength += 0.12
 
   const temporalDistance = Math.abs(profileA.index - profileB.index)
-  strength += Math.exp(-temporalDistance / 6) * 0.12
+  strength += Math.exp(-temporalDistance / 6) * 0.08
 
   const lowIndex = Math.min(profileA.index, profileB.index)
   const highIndex = Math.max(profileA.index, profileB.index)
-  strength += seededRandom((lowIndex + 1) * 97 + (highIndex + 1) * 53) * 0.06
+  strength += seededRandom((lowIndex + 1) * 97 + (highIndex + 1) * 53) * 0.04
 
-  return THREE.MathUtils.clamp(strength, 0.06, 1)
+  return THREE.MathUtils.clamp(strength, 0.03, 1)
 }
 
 function getRelationshipRestLength(strength, a, b) {
-  const relationshipShape = Math.pow(strength, 0.75)
+  const clustering = THREE.MathUtils.smoothstep(strength, 0.3, 0.84)
   const baseLength = THREE.MathUtils.lerp(
     WEAK_REST_LENGTH,
     STRONG_REST_LENGTH,
-    relationshipShape,
+    clustering,
   )
   const variation = 0.96 + seededRandom((a + 1) * 29 + (b + 1) * 71) * 0.08
 
@@ -68,13 +68,20 @@ function getRelationshipRestLength(strength, a, b) {
 }
 
 function getRelationshipStiffness(strength) {
-  const influence = 0.006 + Math.pow(strength, 3.2) * 1.15
+  const shaped = THREE.MathUtils.smoothstep(strength, 0.14, 0.96)
+  const influence = 0.0015 + Math.pow(shaped, 4.2) * 1.55
   return SPRING_STIFFNESS * influence
 }
 
 function getRelationshipDamping(strength) {
-  const influence = 0.12 + Math.pow(strength, 1.5) * 0.88
+  const shaped = THREE.MathUtils.smoothstep(strength, 0.14, 0.96)
+  const influence = 0.08 + Math.pow(shaped, 1.8) * 0.92
   return SPRING_DAMPING * influence
+}
+
+function getRelationshipBrightness(strength) {
+  const shaped = THREE.MathUtils.smoothstep(strength, 0.08, 0.95)
+  return 0.015 + Math.pow(shaped, 3.1) * 0.985
 }
 
 function createSpawnPosition(index) {
@@ -101,34 +108,55 @@ function createLineColorBuffer() {
   return new Float32Array(MAX_EDGES * 2 * 3)
 }
 
-function writeRelationshipColor(colors, edgeIndex, strength) {
-  const brightness = 0.35 + strength * 0.65
-  const red = 0.91 * brightness
-  const green = 0.93 * brightness
-  const blue = 0.97 * brightness
-  const offset = edgeIndex * 6
+function getRelativeDepth(node, center, cameraForward) {
+  const x = node.position.x - center.x
+  const y = node.position.y - center.y
+  const z = node.position.z - center.z
 
-  colors[offset] = red
-  colors[offset + 1] = green
-  colors[offset + 2] = blue
-  colors[offset + 3] = red
-  colors[offset + 4] = green
-  colors[offset + 5] = blue
+  return x * cameraForward.x + y * cameraForward.y + z * cameraForward.z
 }
 
-function applyNodeMatrices(mesh, nodes, dummy) {
+function getFrontWeight(node, center, cameraForward, maxAbsDepth) {
+  if (maxAbsDepth < 0.0001) return 0.5
+
+  const depth = getRelativeDepth(node, center, cameraForward)
+  return THREE.MathUtils.clamp(0.5 - depth / (maxAbsDepth * 2), 0, 1)
+}
+
+function applyNodeVisuals(
+  mesh,
+  nodes,
+  dummy,
+  color,
+  center,
+  cameraForward,
+  maxAbsDepth,
+) {
   if (!mesh) return
 
   mesh.count = nodes.length
 
   nodes.forEach((node, index) => {
+    const frontWeight = getFrontWeight(
+      node,
+      center,
+      cameraForward,
+      maxAbsDepth,
+    )
+    const brightness = 0.9 + frontWeight * 0.1
+    const scale = 0.96 + frontWeight * 0.06
+
     dummy.position.copy(node.position)
-    dummy.scale.setScalar(1)
+    dummy.scale.setScalar(scale)
     dummy.updateMatrix()
     mesh.setMatrixAt(index, dummy.matrix)
+
+    color.setRGB(brightness, brightness, brightness)
+    mesh.setColorAt(index, color)
   })
 
   mesh.instanceMatrix.needsUpdate = true
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
 }
 
 const HomeOrb = forwardRef(function HomeOrb(_, ref) {
@@ -141,6 +169,7 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
   const linePositions = useMemo(() => createLineBuffer(), [])
   const lineColors = useMemo(() => createLineColorBuffer(), [])
   const dummy = useMemo(() => new THREE.Object3D(), [])
+  const nodeColor = useMemo(() => new THREE.Color(), [])
   const scratch = useMemo(
     () => ({
       delta: new THREE.Vector3(),
@@ -148,6 +177,7 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
       relativeVelocity: new THREE.Vector3(),
       centerOfMass: new THREE.Vector3(),
       centerCorrection: new THREE.Vector3(),
+      cameraForward: new THREE.Vector3(),
     }),
     [],
   )
@@ -178,22 +208,17 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
       for (let candidateIndex = 0; candidateIndex < index; candidateIndex += 1) {
         const candidate = nodes[candidateIndex]
         const strength = getRelationshipStrength(profile, candidate.profile)
-        const edgeIndex = edges.length
 
         edges.push({
           a: index,
           b: candidateIndex,
           strength,
+          visualBrightness: getRelationshipBrightness(strength),
           restLength: getRelationshipRestLength(strength, index, candidateIndex),
           stiffness: getRelationshipStiffness(strength),
           damping: getRelationshipDamping(strength),
         })
-
-        writeRelationshipColor(lineColors, edgeIndex, strength)
       }
-
-      const colorAttribute = lineGeometryRef.current?.attributes.color
-      if (colorAttribute) colorAttribute.needsUpdate = true
 
       setNodeCount(nodes.length)
       return true
@@ -209,7 +234,7 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
     if (lineGeometryRef.current) lineGeometryRef.current.setDrawRange(0, 0)
   }, [nodeCount])
 
-  useFrame((_, frameDelta) => {
+  useFrame((state, frameDelta) => {
     const nodes = nodesRef.current
     const edges = edgesRef.current
 
@@ -288,26 +313,77 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
       })
     }
 
-    applyNodeMatrices(nodeRef.current, nodes, dummy)
+    scratch.centerOfMass.set(0, 0, 0)
+    nodes.forEach((node) => scratch.centerOfMass.add(node.position))
+    scratch.centerOfMass.multiplyScalar(1 / nodes.length)
+
+    state.camera.getWorldDirection(scratch.cameraForward).normalize()
+
+    let maxAbsDepth = 0
+    nodes.forEach((node) => {
+      maxAbsDepth = Math.max(
+        maxAbsDepth,
+        Math.abs(
+          getRelativeDepth(node, scratch.centerOfMass, scratch.cameraForward),
+        ),
+      )
+    })
+
+    applyNodeVisuals(
+      nodeRef.current,
+      nodes,
+      dummy,
+      nodeColor,
+      scratch.centerOfMass,
+      scratch.cameraForward,
+      maxAbsDepth,
+    )
 
     if (lineGeometryRef.current) {
       const positionAttribute = lineGeometryRef.current.attributes.position
-      const array = positionAttribute.array
+      const colorAttribute = lineGeometryRef.current.attributes.color
+      const positionArray = positionAttribute.array
+      const colorArray = colorAttribute.array
 
       edges.forEach((edge, edgeIndex) => {
         const nodeA = nodes[edge.a]
         const nodeB = nodes[edge.b]
         const offset = edgeIndex * 6
 
-        array[offset] = nodeA.position.x
-        array[offset + 1] = nodeA.position.y
-        array[offset + 2] = nodeA.position.z
-        array[offset + 3] = nodeB.position.x
-        array[offset + 4] = nodeB.position.y
-        array[offset + 5] = nodeB.position.z
+        positionArray[offset] = nodeA.position.x
+        positionArray[offset + 1] = nodeA.position.y
+        positionArray[offset + 2] = nodeA.position.z
+        positionArray[offset + 3] = nodeB.position.x
+        positionArray[offset + 4] = nodeB.position.y
+        positionArray[offset + 5] = nodeB.position.z
+
+        const frontA = getFrontWeight(
+          nodeA,
+          scratch.centerOfMass,
+          scratch.cameraForward,
+          maxAbsDepth,
+        )
+        const frontB = getFrontWeight(
+          nodeB,
+          scratch.centerOfMass,
+          scratch.cameraForward,
+          maxAbsDepth,
+        )
+        const depthA = 0.88 + frontA * 0.12
+        const depthB = 0.88 + frontB * 0.12
+        const brightnessA = edge.visualBrightness * depthA
+        const brightnessB = edge.visualBrightness * depthB
+
+        colorArray[offset] = 0.91 * brightnessA
+        colorArray[offset + 1] = 0.93 * brightnessA
+        colorArray[offset + 2] = 0.97 * brightnessA
+        colorArray[offset + 3] = 0.91 * brightnessB
+        colorArray[offset + 4] = 0.93 * brightnessB
+        colorArray[offset + 5] = 0.97 * brightnessB
       })
 
       positionAttribute.needsUpdate = true
+      colorAttribute.needsUpdate = true
       lineGeometryRef.current.setDrawRange(0, edges.length * 2)
     }
   })
@@ -330,9 +406,9 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
         <lineBasicMaterial
           vertexColors
           transparent
-          opacity={0.22}
+          opacity={0.3}
           depthWrite={false}
-          blending={THREE.AdditiveBlending}
+          blending={THREE.NormalBlending}
           toneMapped={false}
         />
       </lineSegments>
