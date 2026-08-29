@@ -17,7 +17,8 @@ const REPULSION_SOFTENING = 0.045
 const MAX_REPULSION_FORCE = 6
 const SPRING_STIFFNESS = 5.4
 const SPRING_DAMPING = 0.95
-const BASE_REST_LENGTH = 0.68
+const STRONG_REST_LENGTH = 0.48
+const WEAK_REST_LENGTH = 1.32
 const NODE_DAMPING = 2.6
 const CENTER_OF_MASS_STIFFNESS = 0.22
 const MAX_SPEED = 3.2
@@ -26,6 +27,54 @@ const SUBSTEPS = 3
 function seededRandom(seed) {
   const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453
   return value - Math.floor(value)
+}
+
+function createMemoryProfile(index) {
+  return {
+    index,
+    person: Math.floor(seededRandom(index * 37 + 11) * 5),
+    place: Math.floor(seededRandom(index * 41 + 17) * 4),
+    topic: Math.floor(seededRandom(index * 43 + 23) * 5),
+  }
+}
+
+function getRelationshipStrength(profileA, profileB) {
+  let strength = 0.06
+
+  if (profileA.person === profileB.person) strength += 0.48
+  if (profileA.place === profileB.place) strength += 0.22
+  if (profileA.topic === profileB.topic) strength += 0.16
+
+  const temporalDistance = Math.abs(profileA.index - profileB.index)
+  strength += Math.exp(-temporalDistance / 6) * 0.12
+
+  const lowIndex = Math.min(profileA.index, profileB.index)
+  const highIndex = Math.max(profileA.index, profileB.index)
+  strength += seededRandom((lowIndex + 1) * 97 + (highIndex + 1) * 53) * 0.06
+
+  return THREE.MathUtils.clamp(strength, 0.06, 1)
+}
+
+function getRelationshipRestLength(strength, a, b) {
+  const relationshipShape = Math.pow(strength, 0.75)
+  const baseLength = THREE.MathUtils.lerp(
+    WEAK_REST_LENGTH,
+    STRONG_REST_LENGTH,
+    relationshipShape,
+  )
+  const variation = 0.96 + seededRandom((a + 1) * 29 + (b + 1) * 71) * 0.08
+
+  return baseLength * variation
+}
+
+function getRelationshipStiffness(strength) {
+  const influence = 0.006 + Math.pow(strength, 3.2) * 1.15
+  return SPRING_STIFFNESS * influence
+}
+
+function getRelationshipDamping(strength) {
+  const influence = 0.12 + Math.pow(strength, 1.5) * 0.88
+  return SPRING_DAMPING * influence
 }
 
 function createSpawnPosition(index) {
@@ -46,6 +95,25 @@ function createSpawnPosition(index) {
 
 function createLineBuffer() {
   return new Float32Array(MAX_EDGES * 2 * 3)
+}
+
+function createLineColorBuffer() {
+  return new Float32Array(MAX_EDGES * 2 * 3)
+}
+
+function writeRelationshipColor(colors, edgeIndex, strength) {
+  const brightness = 0.35 + strength * 0.65
+  const red = 0.91 * brightness
+  const green = 0.93 * brightness
+  const blue = 0.97 * brightness
+  const offset = edgeIndex * 6
+
+  colors[offset] = red
+  colors[offset + 1] = green
+  colors[offset + 2] = blue
+  colors[offset + 3] = red
+  colors[offset + 4] = green
+  colors[offset + 5] = blue
 }
 
 function applyNodeMatrices(mesh, nodes, dummy) {
@@ -71,6 +139,7 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
   const [nodeCount, setNodeCount] = useState(0)
 
   const linePositions = useMemo(() => createLineBuffer(), [])
+  const lineColors = useMemo(() => createLineColorBuffer(), [])
   const dummy = useMemo(() => new THREE.Object3D(), [])
   const scratch = useMemo(
     () => ({
@@ -93,6 +162,7 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
 
       const position = createSpawnPosition(index)
       const outwardVelocity = position.clone()
+      const profile = createMemoryProfile(index)
 
       if (outwardVelocity.lengthSq() > 0) {
         outwardVelocity.normalize().multiplyScalar(0.08)
@@ -102,18 +172,28 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
         position,
         velocity: outwardVelocity,
         force: new THREE.Vector3(),
+        profile,
       })
 
       for (let candidateIndex = 0; candidateIndex < index; candidateIndex += 1) {
-        const restVariation =
-          0.92 + seededRandom(index * 31 + candidateIndex * 17) * 0.16
+        const candidate = nodes[candidateIndex]
+        const strength = getRelationshipStrength(profile, candidate.profile)
+        const edgeIndex = edges.length
 
         edges.push({
           a: index,
           b: candidateIndex,
-          restLength: BASE_REST_LENGTH * restVariation,
+          strength,
+          restLength: getRelationshipRestLength(strength, index, candidateIndex),
+          stiffness: getRelationshipStiffness(strength),
+          damping: getRelationshipDamping(strength),
         })
+
+        writeRelationshipColor(lineColors, edgeIndex, strength)
       }
+
+      const colorAttribute = lineGeometryRef.current?.attributes.color
+      if (colorAttribute) colorAttribute.needsUpdate = true
 
       setNodeCount(nodes.length)
       return true
@@ -184,7 +264,7 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
           .dot(scratch.direction)
 
         const forceMagnitude =
-          SPRING_STIFFNESS * stretch + SPRING_DAMPING * relativeSpeed
+          edge.stiffness * stretch + edge.damping * relativeSpeed
 
         nodeA.force.addScaledVector(scratch.direction, forceMagnitude)
         nodeB.force.addScaledVector(scratch.direction, -forceMagnitude)
@@ -241,13 +321,19 @@ const HomeOrb = forwardRef(function HomeOrb(_, ref) {
             args={[linePositions, 3]}
             usage={THREE.DynamicDrawUsage}
           />
+          <bufferAttribute
+            attach="attributes-color"
+            args={[lineColors, 3]}
+            usage={THREE.DynamicDrawUsage}
+          />
         </bufferGeometry>
         <lineBasicMaterial
-          color="#e8edf8"
+          vertexColors
           transparent
           opacity={0.22}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
+          toneMapped={false}
         />
       </lineSegments>
 
