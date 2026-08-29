@@ -1,92 +1,62 @@
-import { useLayoutEffect, useMemo, useRef } from 'react'
+import {
+  forwardRef,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 
-const NODE_COUNT = 96
-const RADIUS = 2.25
+const MAX_NODES = 120
+const MAX_LINKS_PER_NODE = 4
+const MAX_EDGES = MAX_NODES * MAX_LINKS_PER_NODE
 
-const EDGE_STIFFNESS = 19
-const EDGE_DAMPING = 2.6
-const ANCHOR_STIFFNESS = 2.2
-const RADIAL_STIFFNESS = 4.6
-const NODE_DAMPING = 3.4
-const MOTION_FORCE = 1.85
-const MAX_ANGULAR_SPEED = 3.2
-const MAX_OFFSET = 0.34
+const REPULSION_STRENGTH = 0.5
+const REPULSION_SOFTENING = 0.045
+const MAX_REPULSION_FORCE = 6
+const SPRING_STIFFNESS = 5.4
+const SPRING_DAMPING = 0.95
+const BASE_REST_LENGTH = 0.68
+const NODE_DAMPING = 2.6
+const CENTER_OF_MASS_STIFFNESS = 0.22
+const MAX_SPEED = 3.2
 const SUBSTEPS = 3
 
-function createSpherePoints() {
-  return Array.from({ length: NODE_COUNT }, (_, index) => {
-    const y = 1 - (index / (NODE_COUNT - 1)) * 2
-    const radiusAtY = Math.sqrt(1 - y * y)
-    const theta = Math.PI * (3 - Math.sqrt(5)) * index
-
-    return new THREE.Vector3(
-      Math.cos(theta) * radiusAtY * RADIUS,
-      y * RADIUS,
-      Math.sin(theta) * radiusAtY * RADIUS,
-    )
-  })
+function seededRandom(seed) {
+  const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453
+  return value - Math.floor(value)
 }
 
-function createConnections(points) {
-  const seen = new Set()
-  const edges = []
+function createSpawnPosition(index) {
+  if (index === 0) return new THREE.Vector3(0, 0, 0)
 
-  points.forEach((point, index) => {
-    const nearest = points
-      .map((candidate, candidateIndex) => ({
-        candidateIndex,
-        distance: point.distanceToSquared(candidate),
-      }))
-      .filter(({ candidateIndex }) => candidateIndex !== index)
-      .sort((a, b) => a.distance - b.distance)
-      .slice(0, 3)
+  const direction = new THREE.Vector3(
+    seededRandom(index * 3 + 1) * 2 - 1,
+    seededRandom(index * 3 + 2) * 2 - 1,
+    seededRandom(index * 3 + 3) * 2 - 1,
+  )
 
-    nearest.forEach(({ candidateIndex }) => {
-      const a = Math.min(index, candidateIndex)
-      const b = Math.max(index, candidateIndex)
-      const key = `${a}:${b}`
+  if (direction.lengthSq() < 0.0001) direction.set(1, 0, 0)
+  direction.normalize()
 
-      if (seen.has(key)) return
-      seen.add(key)
-
-      edges.push({
-        a,
-        b,
-        restLength: points[a].distanceTo(points[b]),
-      })
-    })
-  })
-
-  return edges
+  const radius = 0.06 + seededRandom(index * 7 + 5) * 0.12
+  return direction.multiplyScalar(radius)
 }
 
-function createConnectionBuffer(points, edges) {
-  const positions = new Float32Array(edges.length * 2 * 3)
-
-  edges.forEach((edge, edgeIndex) => {
-    const a = points[edge.a]
-    const b = points[edge.b]
-    const offset = edgeIndex * 6
-
-    positions[offset] = a.x
-    positions[offset + 1] = a.y
-    positions[offset + 2] = a.z
-    positions[offset + 3] = b.x
-    positions[offset + 4] = b.y
-    positions[offset + 5] = b.z
-  })
-
-  return positions
+function createLineBuffer() {
+  return new Float32Array(MAX_EDGES * 2 * 3)
 }
 
-function applyMatrices(mesh, points, dummy, scale = 1) {
+function applyNodeMatrices(mesh, nodes, dummy) {
   if (!mesh) return
 
-  points.forEach((point, index) => {
-    dummy.position.copy(point)
-    dummy.scale.setScalar(scale)
+  mesh.count = nodes.length
+
+  nodes.forEach((node, index) => {
+    dummy.position.copy(node.position)
+    dummy.scale.setScalar(1)
     dummy.updateMatrix()
     mesh.setMatrixAt(index, dummy.matrix)
   })
@@ -94,238 +64,189 @@ function applyMatrices(mesh, points, dummy, scale = 1) {
   mesh.instanceMatrix.needsUpdate = true
 }
 
-export default function HomeOrb() {
+const HomeOrb = forwardRef(function HomeOrb(_, ref) {
   const nodeRef = useRef()
-  const glowRef = useRef()
   const lineGeometryRef = useRef()
-  const previousCameraQuaternion = useRef(new THREE.Quaternion())
-  const hasPreviousCameraQuaternion = useRef(false)
+  const nodesRef = useRef([])
+  const edgesRef = useRef([])
+  const degreesRef = useRef(new Array(MAX_NODES).fill(0))
+  const [nodeCount, setNodeCount] = useState(0)
 
-  const restPoints = useMemo(() => createSpherePoints(), [])
-  const currentPoints = useMemo(
-    () => restPoints.map((point) => point.clone()),
-    [restPoints],
-  )
-  const velocities = useMemo(
-    () => restPoints.map(() => new THREE.Vector3()),
-    [restPoints],
-  )
-  const forces = useMemo(
-    () => restPoints.map(() => new THREE.Vector3()),
-    [restPoints],
-  )
-  const responseFactors = useMemo(
-    () => restPoints.map((_, index) => 0.86 + 0.22 * (0.5 + 0.5 * Math.sin(index * 2.173))),
-    [restPoints],
-  )
-  const edges = useMemo(() => createConnections(restPoints), [restPoints])
-  const connectionPositions = useMemo(
-    () => createConnectionBuffer(restPoints, edges),
-    [edges, restPoints],
-  )
-
+  const linePositions = useMemo(() => createLineBuffer(), [])
   const dummy = useMemo(() => new THREE.Object3D(), [])
   const scratch = useMemo(
     () => ({
-      deltaQuaternion: new THREE.Quaternion(),
-      inversePrevious: new THREE.Quaternion(),
-      angularAxis: new THREE.Vector3(),
-      angularVelocity: new THREE.Vector3(),
-      cameraDirection: new THREE.Vector3(),
-      tangent: new THREE.Vector3(),
       delta: new THREE.Vector3(),
       direction: new THREE.Vector3(),
-      anchorDelta: new THREE.Vector3(),
-      radialDirection: new THREE.Vector3(),
-      offset: new THREE.Vector3(),
-      projected: new THREE.Vector3(),
+      relativeVelocity: new THREE.Vector3(),
+      centerOfMass: new THREE.Vector3(),
+      centerCorrection: new THREE.Vector3(),
     }),
     [],
   )
 
+  useImperativeHandle(ref, () => ({
+    addNode() {
+      const nodes = nodesRef.current
+      const edges = edgesRef.current
+      const index = nodes.length
+
+      if (index >= MAX_NODES) return false
+
+      const position = createSpawnPosition(index)
+      const outwardVelocity = position.clone()
+
+      if (outwardVelocity.lengthSq() > 0) {
+        outwardVelocity.normalize().multiplyScalar(0.08)
+      }
+
+      nodes.push({
+        position,
+        velocity: outwardVelocity,
+        force: new THREE.Vector3(),
+      })
+
+      if (index > 0) {
+        const linkCount = Math.min(MAX_LINKS_PER_NODE, index)
+        const candidates = Array.from({ length: index }, (_, candidateIndex) => {
+          const distanceSq = nodes[candidateIndex].position.distanceToSquared(position)
+          const degreePenalty = degreesRef.current[candidateIndex] * 0.42
+          const variation = seededRandom(index * 97 + candidateIndex * 13) * 0.08
+
+          return {
+            candidateIndex,
+            score: distanceSq * 0.55 + degreePenalty + variation,
+          }
+        })
+
+        candidates
+          .sort((a, b) => a.score - b.score)
+          .slice(0, linkCount)
+          .forEach(({ candidateIndex }, connectionIndex) => {
+            const restVariation =
+              0.92 + seededRandom(index * 31 + connectionIndex * 17) * 0.16
+
+            edges.push({
+              a: index,
+              b: candidateIndex,
+              restLength: BASE_REST_LENGTH * restVariation,
+            })
+
+            degreesRef.current[index] += 1
+            degreesRef.current[candidateIndex] += 1
+          })
+      }
+
+      setNodeCount(nodes.length)
+      return true
+    },
+  }))
+
   useLayoutEffect(() => {
-    applyMatrices(nodeRef.current, currentPoints, dummy, 1)
-    applyMatrices(glowRef.current, currentPoints, dummy, 2.45)
-  }, [currentPoints, dummy])
+    if (nodeRef.current) nodeRef.current.count = nodeCount
+    if (lineGeometryRef.current) lineGeometryRef.current.setDrawRange(0, 0)
+  }, [nodeCount])
 
-  useFrame((state, frameDelta) => {
+  useFrame((_, frameDelta) => {
+    const nodes = nodesRef.current
+    const edges = edgesRef.current
+
+    if (nodes.length === 0) return
+
     const dt = Math.min(frameDelta, 1 / 30)
-    const cameraQuaternion = state.camera.quaternion
-
-    if (!hasPreviousCameraQuaternion.current) {
-      previousCameraQuaternion.current.copy(cameraQuaternion)
-      hasPreviousCameraQuaternion.current = true
-    }
-
-    scratch.inversePrevious
-      .copy(previousCameraQuaternion.current)
-      .invert()
-    scratch.deltaQuaternion
-      .copy(cameraQuaternion)
-      .multiply(scratch.inversePrevious)
-
-    if (scratch.deltaQuaternion.w < 0) {
-      scratch.deltaQuaternion.set(
-        -scratch.deltaQuaternion.x,
-        -scratch.deltaQuaternion.y,
-        -scratch.deltaQuaternion.z,
-        -scratch.deltaQuaternion.w,
-      )
-    }
-
-    const sinHalfAngle = Math.sqrt(
-      scratch.deltaQuaternion.x * scratch.deltaQuaternion.x +
-        scratch.deltaQuaternion.y * scratch.deltaQuaternion.y +
-        scratch.deltaQuaternion.z * scratch.deltaQuaternion.z,
-    )
-
-    let angularSpeed = 0
-    scratch.angularVelocity.set(0, 0, 0)
-
-    if (sinHalfAngle > 0.000001 && dt > 0) {
-      const angle = 2 * Math.atan2(
-        sinHalfAngle,
-        THREE.MathUtils.clamp(scratch.deltaQuaternion.w, -1, 1),
-      )
-
-      scratch.angularAxis.set(
-        scratch.deltaQuaternion.x / sinHalfAngle,
-        scratch.deltaQuaternion.y / sinHalfAngle,
-        scratch.deltaQuaternion.z / sinHalfAngle,
-      )
-
-      angularSpeed = Math.min(angle / dt, MAX_ANGULAR_SPEED)
-      scratch.angularVelocity
-        .copy(scratch.angularAxis)
-        .multiplyScalar(angularSpeed)
-    }
-
-    previousCameraQuaternion.current.copy(cameraQuaternion)
-
-    scratch.cameraDirection
-      .copy(state.camera.position)
-      .normalize()
-
-    const motionAmount = THREE.MathUtils.smoothstep(angularSpeed, 0.025, 0.9)
     const step = dt / SUBSTEPS
 
     for (let substep = 0; substep < SUBSTEPS; substep += 1) {
-      forces.forEach((force) => force.set(0, 0, 0))
+      nodes.forEach((node) => node.force.set(0, 0, 0))
 
-      currentPoints.forEach((point, index) => {
-        const restPoint = restPoints[index]
-        const response = responseFactors[index]
+      scratch.centerOfMass.set(0, 0, 0)
+      nodes.forEach((node) => scratch.centerOfMass.add(node.position))
+      scratch.centerOfMass.multiplyScalar(1 / nodes.length)
 
-        scratch.anchorDelta
-          .copy(restPoint)
-          .sub(point)
-        forces[index].addScaledVector(
-          scratch.anchorDelta,
-          ANCHOR_STIFFNESS * response,
-        )
+      for (let i = 0; i < nodes.length; i += 1) {
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const nodeA = nodes[i]
+          const nodeB = nodes[j]
 
-        const radius = Math.max(point.length(), 0.0001)
-        const radialError = radius - RADIUS
-        scratch.radialDirection
-          .copy(point)
-          .multiplyScalar(1 / radius)
-        forces[index].addScaledVector(
-          scratch.radialDirection,
-          -radialError * RADIAL_STIFFNESS,
-        )
+          scratch.delta.copy(nodeA.position).sub(nodeB.position)
+          const distanceSq = scratch.delta.lengthSq() + REPULSION_SOFTENING
+          const distance = Math.sqrt(distanceSq)
 
-        if (motionAmount > 0) {
-          scratch.tangent.crossVectors(scratch.angularVelocity, point)
+          if (distance < 0.0001) continue
 
-          const facing = THREE.MathUtils.clamp(
-            point.dot(scratch.cameraDirection) / RADIUS,
-            -1,
-            1,
+          scratch.direction.copy(scratch.delta).multiplyScalar(1 / distance)
+          const forceMagnitude = Math.min(
+            REPULSION_STRENGTH / distanceSq,
+            MAX_REPULSION_FORCE,
           )
-          const frontWeight = THREE.MathUtils.smoothstep(facing, -0.15, 0.82)
 
-          scratch.projected.copy(point).project(state.camera)
-          const dx = scratch.projected.x - state.pointer.x
-          const dy = scratch.projected.y - state.pointer.y
-          const pointerDistanceSq = dx * dx + dy * dy
-          const pointerWeight = Math.exp(-pointerDistanceSq / 0.26)
-
-          const contactWeight =
-            frontWeight * (0.12 + 0.88 * pointerWeight)
-          const irregularity = 0.82 + 0.34 * response
-
-          forces[index].addScaledVector(
-            scratch.tangent,
-            -MOTION_FORCE * motionAmount * contactWeight * irregularity,
-          )
+          nodeA.force.addScaledVector(scratch.direction, forceMagnitude)
+          nodeB.force.addScaledVector(scratch.direction, -forceMagnitude)
         }
-      })
+      }
 
       edges.forEach((edge) => {
-        const pointA = currentPoints[edge.a]
-        const pointB = currentPoints[edge.b]
-        const velocityA = velocities[edge.a]
-        const velocityB = velocities[edge.b]
+        const nodeA = nodes[edge.a]
+        const nodeB = nodes[edge.b]
 
-        scratch.delta.copy(pointB).sub(pointA)
+        if (!nodeA || !nodeB) return
+
+        scratch.delta.copy(nodeB.position).sub(nodeA.position)
         const distance = Math.max(scratch.delta.length(), 0.0001)
-        scratch.direction
-          .copy(scratch.delta)
-          .multiplyScalar(1 / distance)
+        scratch.direction.copy(scratch.delta).multiplyScalar(1 / distance)
 
         const stretch = distance - edge.restLength
-        const relativeSpeed = scratch
-          .delta
-          .copy(velocityB)
-          .sub(velocityA)
+        const relativeSpeed = scratch.relativeVelocity
+          .copy(nodeB.velocity)
+          .sub(nodeA.velocity)
           .dot(scratch.direction)
 
         const forceMagnitude =
-          EDGE_STIFFNESS * stretch + EDGE_DAMPING * relativeSpeed
+          SPRING_STIFFNESS * stretch + SPRING_DAMPING * relativeSpeed
 
-        forces[edge.a].addScaledVector(scratch.direction, forceMagnitude)
-        forces[edge.b].addScaledVector(scratch.direction, -forceMagnitude)
+        nodeA.force.addScaledVector(scratch.direction, forceMagnitude)
+        nodeB.force.addScaledVector(scratch.direction, -forceMagnitude)
       })
+
+      scratch.centerCorrection
+        .copy(scratch.centerOfMass)
+        .multiplyScalar(-CENTER_OF_MASS_STIFFNESS)
 
       const damping = Math.exp(-NODE_DAMPING * step)
 
-      currentPoints.forEach((point, index) => {
-        velocities[index].addScaledVector(forces[index], step)
-        velocities[index].multiplyScalar(damping)
-        point.addScaledVector(velocities[index], step)
+      nodes.forEach((node) => {
+        node.force.add(scratch.centerCorrection)
+        node.velocity.addScaledVector(node.force, step)
+        node.velocity.multiplyScalar(damping)
 
-        scratch.offset.copy(point).sub(restPoints[index])
-        const offsetLength = scratch.offset.length()
+        const speed = node.velocity.length()
+        if (speed > MAX_SPEED) node.velocity.multiplyScalar(MAX_SPEED / speed)
 
-        if (offsetLength > MAX_OFFSET) {
-          scratch.offset.multiplyScalar(MAX_OFFSET / offsetLength)
-          point.copy(restPoints[index]).add(scratch.offset)
-          velocities[index].multiplyScalar(0.68)
-        }
+        node.position.addScaledVector(node.velocity, step)
       })
     }
 
-    applyMatrices(nodeRef.current, currentPoints, dummy, 1)
-    applyMatrices(glowRef.current, currentPoints, dummy, 2.45)
+    applyNodeMatrices(nodeRef.current, nodes, dummy)
 
     if (lineGeometryRef.current) {
       const positionAttribute = lineGeometryRef.current.attributes.position
       const array = positionAttribute.array
 
       edges.forEach((edge, edgeIndex) => {
-        const pointA = currentPoints[edge.a]
-        const pointB = currentPoints[edge.b]
+        const nodeA = nodes[edge.a]
+        const nodeB = nodes[edge.b]
         const offset = edgeIndex * 6
 
-        array[offset] = pointA.x
-        array[offset + 1] = pointA.y
-        array[offset + 2] = pointA.z
-        array[offset + 3] = pointB.x
-        array[offset + 4] = pointB.y
-        array[offset + 5] = pointB.z
+        array[offset] = nodeA.position.x
+        array[offset + 1] = nodeA.position.y
+        array[offset + 2] = nodeA.position.z
+        array[offset + 3] = nodeB.position.x
+        array[offset + 4] = nodeB.position.y
+        array[offset + 5] = nodeB.position.z
       })
 
       positionAttribute.needsUpdate = true
+      lineGeometryRef.current.setDrawRange(0, edges.length * 2)
     }
   })
 
@@ -335,42 +256,29 @@ export default function HomeOrb() {
         <bufferGeometry ref={lineGeometryRef}>
           <bufferAttribute
             attach="attributes-position"
-            args={[connectionPositions, 3]}
+            args={[linePositions, 3]}
+            usage={THREE.DynamicDrawUsage}
           />
         </bufferGeometry>
         <lineBasicMaterial
           color="#e8edf8"
           transparent
-          opacity={0.16}
+          opacity={0.22}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
       </lineSegments>
 
       <instancedMesh
-        ref={glowRef}
-        args={[null, null, NODE_COUNT]}
-        frustumCulled={false}
-      >
-        <sphereGeometry args={[0.032, 10, 10]} />
-        <meshBasicMaterial
-          color="#d9e4ff"
-          transparent
-          opacity={0.085}
-          depthWrite={false}
-          blending={THREE.AdditiveBlending}
-          toneMapped={false}
-        />
-      </instancedMesh>
-
-      <instancedMesh
         ref={nodeRef}
-        args={[null, null, NODE_COUNT]}
+        args={[null, null, MAX_NODES]}
         frustumCulled={false}
       >
-        <sphereGeometry args={[0.032, 12, 12]} />
-        <meshBasicMaterial color="#f7f8fb" toneMapped={false} />
+        <sphereGeometry args={[0.04, 14, 14]} />
+        <meshBasicMaterial color="#f8f9fb" toneMapped={false} />
       </instancedMesh>
     </group>
   )
-}
+})
+
+export default HomeOrb
