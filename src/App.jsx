@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import { TrackballControls } from '@react-three/drei'
 import HomeOrb from './components/HomeOrb.jsx'
@@ -31,6 +31,8 @@ function ResponsiveCamera() {
 }
 
 export default function App() {
+  const memoryFieldRef = useRef()
+
   return (
     <main className="app-shell">
       <Canvas
@@ -44,19 +46,25 @@ export default function App() {
       >
         <color attach="background" args={['#030303']} />
         <ResponsiveCamera />
-        <HomeOrb />
+        <HomeOrb ref={memoryFieldRef} />
         <TrackballControls
           makeDefault
           noPan
-          rotateSpeed={1.55}
+          rotateSpeed={1.45}
           zoomSpeed={0.72}
-          minDistance={4.35}
-          maxDistance={9.2}
+          minDistance={3.6}
+          maxDistance={14}
           staticMoving={false}
           dynamicDampingFactor={0.1}
         />
       </Canvas>
-      <div className="brand">Memory Orb</div>
+
+      <button
+        className="add-node-button"
+        type="button"
+        aria-label="Add memory node"
+        onClick={() => memoryFieldRef.current?.addNode()}
+      />
     </main>
   )
 }
